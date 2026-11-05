@@ -3,18 +3,29 @@
 ```mermaid
 flowchart TB
     U["Cloud User"] --> C["Controller Node"]
-    C --> S["Custom Scheduler"]
-    C --> M["Resource Monitoring"]
-    C --> L["Centralized Logs"]
-    S --> N1["Compute Node 1"]
-    S --> N2["Compute Node 2"]
-    N1 --> H1["KVM / QEMU / libvirt"]
-    N2 --> H2["KVM / QEMU / libvirt"]
-    H1 --> V1["Virtual Machines"]
-    H2 --> V2["Virtual Machines"]
-    SEC["Security Controls"] -.-> C
-    SEC -.-> N1
-    SEC -.-> N2
-    N1 --> C
-    N2 --> C
+
+    subgraph CTRL["Controller Services"]
+        C --> S["Custom Scheduler"]
+        C --> M["Resource Monitor"]
+        C --> L["Centralized Logs"]
+        S --> P["Placement Decision"]
+    end
+
+    P --> C
+
+    C --> A1["Compute Node 1 Agent"]
+    C --> A2["Compute Node 2 Agent"]
+
+    A1 --> H1["KVM / QEMU / libvirt"]
+    A2 --> H2["KVM / QEMU / libvirt"]
+
+    H1 --> V1["Guest VMs"]
+    H2 --> V2["Guest VMs"]
+
+    A1 -->|"CPU and RAM metrics"| M
+    A2 -->|"CPU and RAM metrics"| M
+
+    SEC["Security Controls"] -.-> CTRL
+    SEC -.-> A1
+    SEC -.-> A2
 ```
