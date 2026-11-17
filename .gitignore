@@ -1,4 +1,4 @@
-﻿# Virtual machine disks
+# Virtual machine disks
 *.qcow2
 *.qcow
 *.vmdk
@@ -32,3 +32,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# SSH private keys
+infrastructure-node-access
+compute-node-access
+guest-vm-access
+id_*

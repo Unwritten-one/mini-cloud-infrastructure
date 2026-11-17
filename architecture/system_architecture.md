@@ -16,6 +16,9 @@ flowchart TB
     C --> A1["Compute Node 1 Agent"]
     C --> A2["Compute Node 2 Agent"]
 
+    C -->|"SSH: VM deployment"| A1
+    C -->|"SSH: VM deployment"| A2
+
     A1 --> H1["KVM / QEMU / libvirt"]
     A2 --> H2["KVM / QEMU / libvirt"]
 

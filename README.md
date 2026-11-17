@@ -34,7 +34,7 @@ This project addresses that learning objective by developing a miniature multi-n
 
 ## 4. Proposed System Architecture
 
-The system consists of the following components:
+The system consists of one Controller VM and two Compute VMs hosted by the local WSL2 Ubuntu environment.
 
 ### Controller Node
 - Receives virtual machine creation requests.
@@ -61,29 +61,29 @@ It selects a suitable node based on resource availability and workload requireme
 - SSH key-based authentication.
 - Firewall configuration.
 - Guest network isolation.
-- Unauthorized login monitoring.
-- Resource exhaustion detection.
-- Centralized activity logging.
+- SSH configuration and firewall security audits.
+- Resource utilization monitoring and scheduler capacity limits.
+- Centralized project activity and monitoring logs.
 
 ## 5. Technology Stack
 
 | Component | Technology |
 |---|---|
-| Hosting environment | AWS EC2 (proposed) |
+| Hosting environment | Windows 11 with WSL2 Ubuntu 24.04 |
 | Operating system | Ubuntu Server |
 | Virtualization | KVM/QEMU |
 | VM management | libvirt / virsh |
 | Automation | Bash |
-| Scheduler | Custom Bash-based scheduler |
+| Scheduler | Custom resource-aware scheduler (Bash and Python) |
 | Communication | SSH |
-| Networking | Linux bridges / virtual networks |
+| Networking | libvirt NAT networks, virtual bridges, DHCP and nftables |
 | Security | Linux firewall rules |
 | Monitoring | Linux system utilities and custom scripts |
 | Version control | Git / GitHub |
 
 ## 6. Proposed Deployment Topology
 
-The proposed deployment uses nested virtualization on an AWS EC2 host, subject to compatibility and cost verification.
+The current deployment target is a local WSL2 Ubuntu 24.04 environment running on a Windows 11 laptop. Host-level KVM/QEMU/libvirt provides virtualization for the infrastructure VMs. Nested virtualization inside Compute VMs must be verified before the complete cloud environment can be considered operational.
 
 - One Controller Node.
 - Two Compute Nodes.
@@ -94,7 +94,7 @@ The Controller Node manages the Compute Nodes through secure SSH communication.
 
 Each Compute Node runs its own hypervisor and executes assigned virtual machines.
 
-**Note:** The deployment architecture is proposed and will be updated after infrastructure validation.
+**Note:** The local host environment has been prepared. Full infrastructure deployment and nested virtualization still require verification.
 
 ## 7. Project Workflow
 
@@ -118,7 +118,6 @@ mini-cloud-infrastructure/
 ├── hypervisor/
 ├── networking/
 ├── security/
-├── monitoring/
 ├── config/
 ├── tests/
 ├── logs/

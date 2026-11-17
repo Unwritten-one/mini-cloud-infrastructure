@@ -1,53 +1,114 @@
+#!/usr/bin/env bash
 
-#!/bin/bash
+set -Eeuo pipefail
 
-# Configure and verify the libvirt virtualization service.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONFIG_FILE="$PROJECT_DIR/config/cloud.conf"
 
-set -e
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "[ERROR] Configuration file not found: $CONFIG_FILE"
+    exit 1
+fi
+
+source "$CONFIG_FILE"
+
+if [ "$EUID" -ne 0 ]; then
+    echo "[ERROR] Run with sudo: sudo bash hypervisor/libvirt_setup.sh"
+    exit 1
+fi
+
+for command in virsh systemctl grep awk; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        echo "[ERROR] Required command is missing: $command"
+        exit 1
+    fi
+done
 
 echo "=================================="
 echo "       Libvirt Configuration"
 echo "=================================="
 
-# Check root privileges.
-if [ "$EUID" -ne 0 ]; then
-    echo "[ERROR] Run this script with sudo."
-    exit 1
-fi
+has_unit() {
+    local unit_type="$1"
+    local unit_name="$2"
 
-# Check whether libvirt is installed.
-if ! command -v virsh >/dev/null 2>&1; then
-    echo "[ERROR] virsh is not installed."
-    echo "Run install_kvm.sh first."
-    exit 1
-fi
+    systemctl list-unit-files --type="$unit_type" --no-legend |
+        awk -v unit="$unit_name" '$1 == unit { found=1 } END { exit !found }'
+}
 
-# Enable and start libvirt.
-echo "[1/3] Starting libvirt service..."
+echo "[1/4] Detecting libvirt services..."
 
-if systemctl list-unit-files | grep -q '^libvirtd.service'; then
-    systemctl enable --now libvirtd
-elif systemctl list-unit-files | grep -q '^virtqemud.service'; then
-    systemctl enable --now virtqemud
+if has_unit service libvirtd.service; then
+    echo "[INFO] Using traditional libvirtd service."
+
+    if ! systemctl enable --now libvirtd.service; then
+        echo "[ERROR] Failed to start libvirtd."
+        systemctl status libvirtd.service --no-pager || true
+        exit 1
+    fi
+
+elif has_unit socket virtqemud.socket; then
+    echo "[INFO] Using modular virtqemud service."
+
+    if ! systemctl enable --now virtqemud.socket; then
+        echo "[ERROR] Failed to start virtqemud socket."
+        exit 1
+    fi
+
+    if has_unit socket virtlogd.socket; then
+        if ! systemctl enable --now virtlogd.socket; then
+            echo "[ERROR] Failed to start virtlogd socket."
+            exit 1
+        fi
+    fi
+
+    if has_unit socket virtlockd.socket; then
+        if ! systemctl enable --now virtlockd.socket; then
+            echo "[ERROR] Failed to start virtlockd socket."
+            exit 1
+        fi
+    fi
+
 else
-    echo "[ERROR] No supported libvirt service found."
+    echo "[ERROR] No supported libvirt service or socket found."
+    echo "[INFO] Check the libvirt package installation."
     exit 1
 fi
 
-# Check libvirt connectivity.
-echo "[2/3] Checking libvirt connection..."
+echo "[2/4] Checking KVM device..."
 
-if virsh -c qemu:///system list --all; then
-    echo "[OK] Libvirt connection successful."
-else
-    echo "[ERROR] Unable to connect to libvirt."
+if [ ! -c /dev/kvm ]; then
+    echo "[ERROR] /dev/kvm is unavailable."
     exit 1
 fi
 
-# Display libvirt version.
-echo "[3/3] Checking libvirt version..."
-virsh --version
+if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+    echo "[ERROR] Root cannot read and write /dev/kvm."
+    exit 1
+fi
+
+echo "[OK] KVM device is accessible."
+
+echo "[3/4] Verifying system libvirt connection..."
+
+if ! virsh -c qemu:///system list --all; then
+    echo "[ERROR] Unable to connect to qemu:///system."
+    echo "[INFO] Check libvirt service status and daemon logs."
+    exit 1
+fi
+
+echo "[4/4] Checking libvirt version..."
+
+LIBVIRT_VERSION="$(virsh --version)"
+
+if [ -z "$LIBVIRT_VERSION" ]; then
+    echo "[ERROR] Could not determine libvirt version."
+    exit 1
+fi
 
 echo "=================================="
 echo "Libvirt configuration completed."
+echo "Version: $LIBVIRT_VERSION"
+echo "Connection: qemu:///system"
 echo "=================================="

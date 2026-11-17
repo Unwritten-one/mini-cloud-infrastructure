@@ -1,23 +1,37 @@
-# AWS Deployment Architecture
+# Local WSL2 Deployment Architecture
 
 ```mermaid
 flowchart TB
-    LAP["Personal Laptop"] <-->|"Secure Remote Access"| EC2
+    LAP["Windows 11 Laptop"]
 
-    subgraph AWS["AWS Environment"]
-        EC2["EC2 Ubuntu Host"]
+    subgraph WSL["WSL2 - Ubuntu 24.04"]
+        HV["KVM / QEMU / libvirt"]
 
-        subgraph NESTED["Nested Virtualization Layer"]
-            HV["KVM / QEMU / libvirt"]
-            HV --> C["Controller VM"]
-            HV --> N1["Compute VM 1"]
-            HV --> N2["Compute VM 2"]
-
-            N1 --> VM1["Guest VM 1"]
-            N2 --> VM2["Guest VM 2"]
+        subgraph INFRA["Infrastructure VMs"]
+            C["Controller VM"]
+            N1["Compute VM 1"]
+            N2["Compute VM 2"]
         end
+
+        HV --> C
+        HV --> N1
+        HV --> N2
+
+        N1 --> VM1["Guest VMs"]
+        N2 --> VM2["Guest VMs"]
     end
 
+    LAP <-->|"Local access"| WSL
     LAP <-->|"Git Push / Pull"| GH["GitHub Repository"]
     GH -.->|"Code deployment"| C
 ```
+
+## Deployment Notes
+
+- Windows 11 runs WSL2 with Ubuntu 24.04.
+- KVM, QEMU and libvirt provide host-level virtualization.
+- One Controller VM manages two Compute VMs.
+- The Controller monitors Compute resources and schedules guest VM placement.
+- Compute VMs create and manage guest VMs using KVM and libvirt.
+- GitHub stores the project source code.
+- Nested KVM support inside Compute VMs must be verified before full deployment.
