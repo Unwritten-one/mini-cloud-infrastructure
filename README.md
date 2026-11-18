@@ -179,6 +179,5 @@ bash tests/run_tests.sh
 
 ## 9. Project Information
 
-- **Implementation Track:** Track A — Mini Cloud Infrastructure
 - **Documentation:** See [`docs/implementation.md`](docs/implementation.md)
 - **License:** See [`LICENSE`](LICENSE)
