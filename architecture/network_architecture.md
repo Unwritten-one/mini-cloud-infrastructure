@@ -29,3 +29,5 @@ flowchart TB
     SEC["nftables + UFW\nGuest-to-management isolation"]
     SEC -.-> GUEST
     SEC -.-> MGMT
+
+```

@@ -24,17 +24,31 @@ log() {
     printf '[%s] %s\n' "$(date -Is)" "$message" | tee -a "$LOG_FILE"
 }
 
-
 check_scripts() {
     local command="$1"
     local script
 
     case "$command" in
-        monitor)
+        monitor|watch)
             script="$MONITOR_SCRIPT"
             ;;
         schedule)
             script="$SCHEDULER_SCRIPT"
+            ;;
+        delete)
+            if [[ ! -f "$CONTROLLER_SSH_KEY_PATH" || ! -r "$CONTROLLER_SSH_KEY_PATH" ]]; then
+                log "Controller SSH private key is missing or unreadable."
+                return 1
+            fi
+            if [[ -z "${REMOTE_DEPLOY_DIR:-}" || "$REMOTE_DEPLOY_DIR" != /* ]]; then
+                log "REMOTE_DEPLOY_DIR must be an absolute path."
+                return 1
+            fi
+            command -v ssh >/dev/null 2>&1 || {
+                log "Required command is not installed: ssh"
+                return 1
+            }
+            return 0
             ;;
         deploy)
             for script in "$MONITOR_SCRIPT" "$SCHEDULER_SCRIPT" "$VM_MANAGER"; do
@@ -117,7 +131,6 @@ check_scripts() {
     fi
 }
 
-
 ssh_options() {
     printf '%s\n' \
         -i "$CONTROLLER_SSH_KEY_PATH" \
@@ -134,6 +147,22 @@ run_monitor() {
     if ! bash "$MONITOR_SCRIPT"; then
         log "Monitoring completed with one or more node failures."
     fi
+}
+
+watch_monitor() {
+    local interval="${1:-15}"
+
+    if [[ ! "$interval" =~ ^[0-9]+$ ]] || (( interval < 2 )); then
+        log "Watch interval must be an integer >= 2 seconds."
+        return 1
+    fi
+
+    log "Starting continuous monitoring loop every ${interval}s (Press Ctrl+C to stop)."
+    while true; do
+        run_monitor
+        show_status || true
+        sleep "$interval"
+    done
 }
 
 run_scheduler() {
@@ -226,7 +255,6 @@ except (OSError, csv.Error, KeyError, ValueError):
 PY
 }
 
-
 generate_remote_config() {
     local destination="$1"
 
@@ -243,29 +271,16 @@ generate_remote_config() {
     } > "$destination"
 }
 
-
-
-
 deploy_remote() (
     local node_ip="$1"
     local vm_name="$2"
     local guest_key_path="$3"
-    local temp_dir
-    local remote_config_file
-    local remote_deploy_script
-    local remote_stage
-    local ssh_args=()
-    local scp_args=()
-    local option
-    local status=0
-    local quoted_stage
-    local quoted_deploy_dir
-    local quoted_vm_name
-    local quoted_base_image
-    local quoted_memory
-    local quoted_vcpus
-    local quoted_data_disk
-    local quoted_vm_manager
+    local ip_out_file="$4"
+    local temp_dir remote_config_file remote_deploy_script remote_stage remote_output
+    local guest_ip="UNKNOWN"
+    local ssh_args=() scp_args=() option status=0
+    local quoted_stage quoted_deploy_dir quoted_vm_name quoted_base_image
+    local quoted_memory quoted_vcpus quoted_data_disk quoted_vm_manager
 
     temp_dir="$(mktemp -d)" || return 1
     trap 'rm -rf -- "$temp_dir"' EXIT
@@ -339,6 +354,16 @@ sudo bash "\$vm_manager" create \
     $quoted_vcpus \
     $quoted_data_disk \
     "\$guest_key"
+
+guest_ip=""
+for _ in \$(seq 1 30); do
+    guest_ip="\$(sudo virsh -c qemu:///system domifaddr $quoted_vm_name 2>/dev/null | awk '/ipv4/ {split(\$4, a, "/"); print a[1]; exit}')"
+    if [[ -n "\$guest_ip" ]]; then
+        break
+    fi
+    sleep 2
+done
+printf 'GUEST_IP=%s\n' "\${guest_ip:-UNKNOWN}"
 EOF
 
     if ! scp "${scp_args[@]}" \
@@ -354,12 +379,16 @@ EOF
     else
         log "Files transferred. Creating guest VM $vm_name on $node_ip."
 
-        if ssh "${ssh_args[@]}" "$CLOUD_USER@$node_ip" \
-            bash -s -- "$remote_stage/deploy.sh" <<'REMOTE'
+        if remote_output="$(
+            ssh "${ssh_args[@]}" "$CLOUD_USER@$node_ip" \
+                bash -s -- "$remote_stage/deploy.sh" <<'REMOTE'
 set -Eeuo pipefail
 sudo bash "$1"
 REMOTE
-        then
+        )"; then
+            printf '%s\n' "$remote_output"
+            guest_ip="$(printf '%s\n' "$remote_output" | awk -F= '/^GUEST_IP=/ {print $2; exit}')"
+            printf '%s\n' "${guest_ip:-UNKNOWN}" > "$ip_out_file"
             status=0
         else
             status=$?
@@ -369,20 +398,13 @@ REMOTE
     if (( status != 0 )); then
         printf 'rm -rf -- %q\n' "$remote_stage" |
             ssh "${ssh_args[@]}" "$CLOUD_USER@$node_ip" bash -s || true
-    fi
-
-
-    if (( status != 0 )); then
         log "Remote deployment failed with exit status $status."
         return "$status"
     fi
 
-    log "Guest VM $vm_name created successfully on $node_ip."
+    log "Guest VM $vm_name created successfully on $node_ip (Guest IP: ${guest_ip:-UNKNOWN})."
     return 0
 )
-
-
-
 
 check_vm_name_available() {
     local vm_name="$1"
@@ -439,6 +461,8 @@ deploy_vm() {
     local cpu
     local memory
     local score
+    local ip_out_file
+    local guest_ip="UNKNOWN"
 
     if [[ ! "$vm_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
         log "Invalid VM name. Use letters, numbers, dots, underscores or hyphens."
@@ -477,7 +501,82 @@ deploy_vm() {
     log "Placement decision: $vm_name -> $node ($node_ip)"
     log "Load: CPU=${cpu}% RAM=${memory}% Score=${score}"
 
-    deploy_remote "$node_ip" "$vm_name" "$guest_key_path"
+    ip_out_file="$(mktemp)"
+    if ! deploy_remote "$node_ip" "$vm_name" "$guest_key_path" "$ip_out_file"; then
+        rm -f -- "$ip_out_file"
+        return 1
+    fi
+
+    guest_ip="$(<"$ip_out_file")"
+    rm -f -- "$ip_out_file"
+
+    printf 'DEPLOYED|%s|%s|%s|%s\n' "$vm_name" "$node" "$node_ip" "${guest_ip:-UNKNOWN}"
+}
+
+delete_vm() {
+    local vm_name="${1:-}"
+    local entry
+    local node
+    local node_ip
+    local found=0
+    local option
+    local ssh_args=()
+
+    if [[ ! "$vm_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+        log "Invalid VM name."
+        return 1
+    fi
+
+    while IFS= read -r option; do
+        ssh_args+=("$option")
+    done < <(ssh_options)
+
+    for entry in "${COMPUTE_NODES[@]}"; do
+        IFS='|' read -r node node_ip <<< "$entry"
+
+        if ssh "${ssh_args[@]}" "$CLOUD_USER@$node_ip" \
+            "virsh -c qemu:///system dominfo '$vm_name' >/dev/null 2>&1"; then
+            found=1
+            log "Found guest VM $vm_name on $node ($node_ip). Deleting..."
+
+            if ssh "${ssh_args[@]}" "$CLOUD_USER@$node_ip" \
+                bash -s -- "$vm_name" "$REMOTE_VM_MANAGER" <<'REMOTE'
+set -Eeuo pipefail
+vm_name="$1"
+vm_manager="$2"
+
+state="$(sudo virsh -c qemu:///system domstate "$vm_name" | tr -d '\r')"
+if [[ "$state" != "shut off" ]]; then
+    sudo virsh -c qemu:///system shutdown "$vm_name" >/dev/null 2>&1 || true
+    for _ in $(seq 1 15); do
+        state="$(sudo virsh -c qemu:///system domstate "$vm_name" | tr -d '\r')"
+        [[ "$state" == "shut off" ]] && break
+        sleep 1
+    done
+fi
+
+state="$(sudo virsh -c qemu:///system domstate "$vm_name" | tr -d '\r')"
+if [[ "$state" != "shut off" ]]; then
+    sudo virsh -c qemu:///system destroy "$vm_name" >/dev/null 2>&1 || true
+fi
+
+sudo bash "$vm_manager" delete "$vm_name" --remove-disk
+REMOTE
+            then
+                log "Guest VM $vm_name deleted from $node ($node_ip)."
+                printf 'DELETED|%s|%s|%s\n' "$vm_name" "$node" "$node_ip"
+                return 0
+            else
+                log "Failed to delete guest VM $vm_name on $node ($node_ip)."
+                return 1
+            fi
+        fi
+    done
+
+    if (( found == 0 )); then
+        log "Guest VM $vm_name was not found on any compute node."
+        return 1
+    fi
 }
 
 main() {
@@ -491,6 +590,9 @@ main() {
         monitor)
             run_monitor
             ;;
+        watch)
+            watch_monitor "${2:-15}"
+            ;;
         schedule)
             run_scheduler
             ;;
@@ -500,8 +602,11 @@ main() {
         deploy)
             deploy_vm "${2:-}" "${3:-}"
             ;;
+        delete)
+            delete_vm "${2:-}"
+            ;;
         *)
-            printf 'Usage: %s {monitor|schedule|status|deploy VM_NAME SSH_PUBLIC_KEY}\n' "$0"
+            printf 'Usage: %s {monitor|watch [SEC]|schedule|status|deploy VM_NAME SSH_PUBLIC_KEY|delete VM_NAME}\n' "$0"
             exit 1
             ;;
     esac

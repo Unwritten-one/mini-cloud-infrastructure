@@ -37,7 +37,6 @@ required_files=(
     "networking/network_setup.sh"
     "networking/guest_network_setup.sh"
     "security/security_setup.sh"
-    "deployment/aws_setup.sh"
     "deployment/bootstrap_nodes.sh"
     "deployment/create_infrastructure_vms.sh"
     "deployment/deploy_cloud.sh"

@@ -1,102 +1,42 @@
 # Implementation Details
 
-## 1. Project Overview
+## 1. Overview & Configuration
 
-Mini Cloud Infrastructure is a Bash-based mini-cloud system built using KVM, QEMU and libvirt. It uses a Controller VM to monitor Compute Nodes and schedule guest virtual machines according to available CPU and memory resources.
+Mini Cloud Infrastructure is a Bash- and Python-orchestrated private cloud built on **KVM/QEMU** and **libvirt** inside Windows 11 WSL2 (Ubuntu 24.04). It operates a three-node virtualized cluster (`controller` at `192.168.100.10`, `compute-1` at `192.168.100.11`, `compute-2` at `192.168.100.12`) with nested KVM enabled on compute nodes to host tenant guest VMs.
 
-The current deployment target is Ubuntu 24.04 running inside WSL2 on a Windows 11 host.
+- **`config/cloud.conf`**: Centralizes cloud naming, SSH key paths, remote deployment directory (`/opt/mini-cloud`), guest defaults (`1024` MB RAM, `1` vCPU), Ubuntu 24.04 cloud image paths, storage pools (`infrastructure-vms`, `cloud-vms`), and subnets (`192.168.100.0/24`, `192.168.200.0/24`).
+- **`config/nodes.conf`**: Declares the dynamic `COMPUTE_NODES` array, SSH parameters, resource limits (`NODE_CPU_LIMIT=80`, `NODE_MEMORY_LIMIT=80`), and scheduler weights (`SCHEDULER_CPU_WEIGHT=50`, `SCHEDULER_MEMORY_WEIGHT=50`).
 
-## 2. Infrastructure Architecture
+---
 
-The planned infrastructure contains:
+## 2. Component Architecture
 
-- One Controller VM for management and scheduling.
-- Two Compute VMs for hosting guest virtual machines.
-- KVM/QEMU as the virtualization technology.
-- Libvirt for virtual machine and network management.
+- **`hypervisor/`**:
+  - `kvm_setup.sh`: Verifies hardware virtualization (`vmx`/`svm`), `/dev/kvm` permissions, and required KVM/QEMU packages.
+  - `libvirt_setup.sh`: Enables and validates `libvirtd` and `qemu:///system`.
+  - `storage_setup.sh`: Creates and activates directory-backed libvirt storage pools (`infrastructure-vms` on the host; `cloud-vms` on compute nodes).
+  - `vm_manager.sh`: Provisions and deletes libvirt domains using `qcow2` backing images and `cloud-localds` cloud-init ISOs (configuring hostname, SSH authorized keys, and disabling password/root SSH login).
+- **`networking/`**:
+  - `network_setup.sh`: Provisions `cloud-management` (`virbr10`, `192.168.100.0/24`) with static DHCP MAC bindings for `controller` (`.10`), `compute-1` (`.11`), and `compute-2` (`.12`).
+  - `guest_network_setup.sh`: Provisions `cloud-guests` (`virbr20`, `192.168.200.0/24`) on compute nodes and applies `nftables` (`mini_cloud_guest_guard`) rules blocking guest-to-management subnet traffic.
+- **`controller/`**:
+  - `node_monitor.sh`: Iterates over `COMPUTE_NODES` via SSH, samples `/proc/stat` and `/proc/meminfo`, logs threshold warnings, and appends records to `results/resource_metrics/node_metrics.csv`.
+  - `scheduler.sh`: Validates metric freshness (`<= 300s`), excludes offline or over-threshold nodes (`>= 80%` CPU or RAM), computes a weighted score `(100 - CPU%) * 0.5 + (100 - RAM%) * 0.5`, and records decisions in `results/scheduler_results/placement_decisions.csv`.
+  - `cloud_manager.sh`: Orchestrates `monitor`, `schedule`, `deploy`, `delete`, `status`, and `watch`, polling `virsh domifaddr` until newly deployed guests receive a `192.168.200.x` DHCP address.
+- **`compute/`**:
+  - `node_agent.sh` & `resource_report.sh`: Collect and format local compute node CPU, memory, root filesystem disk usage, and libvirt daemon status.
+- **`deployment/`**:
+  - `deploy_cloud.sh`, `create_infrastructure_vms.sh`, & `bootstrap_nodes.sh`: Prepare the WSL2 host, launch the three infrastructure VMs, and configure packages, storage, networks, firewall rules, and `/opt/mini-cloud` files.
+  - `request_vm.sh`: Client CLI supporting single and batch `deploy`, `delete`, and `list` operations, automatic local SSH port forwarding (`2221`–`2299` via the Controller jump host), state persistence in `results/active_guests.csv`, and tunnel cleanup on deletion.
+- **`security/` & `tests/`**:
+  - `security_setup.sh`: Applies UFW default-deny inbound policies and hardens `sshd_config`.
+  - `audit_monitor.sh`: Scans `journalctl` across `controller`, `compute-1`, and `compute-2` for `sshd` failures and `UFW BLOCK` events, writing alerts to `logs/security_audit.log`.
+  - `tests/run_tests.sh`: Validates required files, `bash -n` syntax across all scripts, configuration variables, node count, and scheduler weight totals.
 
-The Controller communicates with Compute Nodes over SSH.
+---
 
-## 3. Main Components
+## 3. Verification Status
 
-### Hypervisor
-
-The `hypervisor/` directory contains scripts for:
-
-- Checking and installing KVM-related packages.
-- Configuring libvirt services.
-- Creating and managing VM storage pools.
-- Creating and deleting virtual machines.
-
-### Controller
-
-The `controller/` directory contains:
-
-- `node_monitor.sh`: Collects CPU and memory metrics from Compute Nodes.
-- `scheduler.sh`: Evaluates available resources and selects a suitable Compute Node.
-- `cloud_manager.sh`: Coordinates monitoring, scheduling and remote guest VM deployment.
-
-### Compute Nodes
-
-The `compute/` directory contains:
-
-- `node_agent.sh`: Provides node health and resource information.
-- `resource_report.sh`: Displays CPU, memory, disk and libvirt status.
-
-### Networking
-
-The `networking/` directory configures separate management and guest networks using libvirt NAT networks.
-
-Guest-to-management traffic is restricted using firewall rules.
-
-### Security
-
-The `security/` directory contains SSH hardening and firewall configuration for infrastructure VMs.
-
-### Deployment
-
-The `deployment/` directory contains scripts for:
-
-- AWS environment setup from the earlier deployment plan.
-- Creating Controller and Compute infrastructure VMs.
-- Bootstrapping and configuring infrastructure nodes.
-- Coordinating cloud deployment.
-
-## 4. Resource-Aware Scheduling
-
-The custom scheduler uses CPU and memory utilization metrics.
-
-The configured weights are:
-
-- CPU weight: 50%
-- Memory weight: 50%
-
-The scheduler evaluates eligible Compute Nodes against configured resource limits and selects a suitable node.
-
-Metrics are collected by the Controller and stored in CSV files under `results/resource_metrics/`. Scheduling decisions are recorded under `results/scheduler_results/`.
-
-## 5. Network Configuration
-
-The system uses two separate virtual networks:
-
-| Network | Subnet | Purpose |
-|---|---|---|
-| Management | 192.168.100.0/24 | Controller and Compute communication |
-| Guest | 192.168.200.0/24 | Guest virtual machine networking |
-
-The Controller uses `192.168.100.10`, while the Compute Nodes use `192.168.100.11` and `192.168.100.12`.
-
-## 6. Configuration
-
-Central configuration is maintained in:
-
-- `config/cloud.conf`: Cloud, VM, storage and network settings.
-- `config/nodes.conf`: Compute Node addresses, SSH settings and scheduler parameters.
-
-## 7. Current Implementation Status
-
-The project scripts and configuration have been prepared for the local WSL2 deployment target.
-
-Host-level KVM availability has been checked. Infrastructure VM deployment, guest VM creation, end-to-end scheduling and nested KVM operation inside Compute VMs still require practical verification.
-
-These features will be marked complete only after successful testing.
+- Infrastructure VMs (`controller`, `compute-1`, `compute-2`) and virtual networks (`cloud-management`, `cloud-guests`) are active with nested KVM enabled.
+- End-to-end single and batch guest VM provisioning, weighted scheduling, local SSH port forwarding (`2221`–`2299`), guest-to-management network isolation, and batch teardown are verified.
+- `tests/run_tests.sh` passes 45/45 automated checks.

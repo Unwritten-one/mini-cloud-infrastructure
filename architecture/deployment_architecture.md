@@ -34,4 +34,4 @@ flowchart TB
 - The Controller monitors Compute resources and schedules guest VM placement.
 - Compute VMs create and manage guest VMs using KVM and libvirt.
 - GitHub stores the project source code.
-- Nested KVM support inside Compute VMs must be verified before full deployment.
+- Nested KVM virtualization is enabled on Compute VMs, with local SSH port forwarding (`2221`–`2299`) providing direct guest access.
